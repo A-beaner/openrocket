@@ -10,14 +10,7 @@ import java.util.Random;
 import java.util.function.Function;
 import java.util.function.ToDoubleFunction;
 
-/**
- * Runs repeatable, population-based rocket design searches on OpenRocket's
- * native Simulation model. The caller owns the design mutation function, so
- * this runner can be used with any ARC-specific geometry or motor strategy.
- *
- * <p>Each candidate is simulated by OpenRocket itself. This class deliberately
- * does not implement a second flight-physics model.</p>
- */
+/** Runs repeatable population-based searches using OpenRocket's native model. */
 public final class ArcIterationRunner {
     private ArcIterationRunner() {
     }
@@ -40,15 +33,17 @@ public final class ArcIterationRunner {
      * Search for low-score candidates. The factory creates the initial
      * population; mutate must return an independent Simulation copy.
      *
-     * @param factory creates a fresh candidate from a deterministic index
-     * @param mutate mutates/duplicates a candidate without changing its input
-     * @param objective optional extra score term; return 0 for altitude-only scoring
+     * <p>The constraintPenalty function should return zero for a candidate
+     * satisfying team-specific constraints, and a positive penalty otherwise.
+     * It is the hook for checking OpenRocket component mass and stability data,
+     * which are not part of FlightData.</p>
      */
     public static List<Candidate> search(Function<Integer, Simulation> factory,
                                          Function<Simulation, Simulation> mutate,
                                          Constraints constraints, int generations,
                                          int populationSize, long randomSeed,
-                                         ToDoubleFunction<FlightData> objective) {
+                                         ToDoubleFunction<FlightData> objective,
+                                         ToDoubleFunction<Simulation> constraintPenalty) {
         if (generations < 1 || populationSize < 2) {
             throw new IllegalArgumentException("generations and populationSize are too small");
         }
@@ -70,9 +65,10 @@ public final class ArcIterationRunner {
                 double altitudeError = Math.abs(data.getMaxAltitude() - constraints.targetAltitudeM())
                         / constraints.altitudeToleranceM();
                 double speedPenalty = Math.max(0, data.getMaxVelocity() - constraints.maxVelocityMps()) / 20.0;
-                double score = altitudeError + speedPenalty + objective.applyAsDouble(data);
-                ranked.add(new Candidate(simulation, data, score, altitudeError <= 1 && speedPenalty == 0,
-                        generation));
+                double designPenalty = Math.max(0, constraintPenalty.applyAsDouble(simulation));
+                double score = altitudeError + speedPenalty + designPenalty + objective.applyAsDouble(data);
+                ranked.add(new Candidate(simulation, data, score,
+                        altitudeError <= 1 && speedPenalty == 0 && designPenalty == 0, generation));
             }
             ranked.sort(Comparator.comparingDouble(Candidate::score));
             archive.addAll(ranked.subList(0, Math.min(10, ranked.size())));
@@ -90,6 +86,6 @@ public final class ArcIterationRunner {
         }
 
         archive.sort(Comparator.comparingDouble(Candidate::score));
-        return archive.stream().distinct().limit(20).toList();
+        return archive.stream().limit(20).toList();
     }
 }
